@@ -2,9 +2,15 @@
 
 import { extname } from 'path'
 import { performOCR } from '@/helpers/openl-ocr'
-import { queryGenAiMedicalCoding } from './gemini'
+import { extractProcedures, queryGenAiMedicalCoding } from './gemini'
 
-export async function submitMedicalData(formData: FormData): Promise<{ text: string; files: string[]; ocrResults: { [key: string]: string }; medicalCoding?: string }> {
+export async function submitMedicalData(formData: FormData): Promise<{ 
+  text: string; 
+  files: string[]; 
+  ocrResults: { [key: string]: string }; 
+  extractedProcedures?: string;
+  medicalCoding?: string 
+}> {
   try {
     const text = formData.get('text') as string
     const files = formData.getAll('files') as File[]
@@ -63,16 +69,24 @@ export async function submitMedicalData(formData: FormData): Promise<{ text: str
       }
     }
 
-    // Combine OCR results and text for medical coding analysis
-    let medicalCoding: string | undefined
     // Combine all OCR text with user-provided text
     const allOcrText = Object.values(ocrResults).join('\n\n')
     
+    // First extract diagnosis
+    let extractedProcedures: string | undefined
+    let medicalCoding: string | undefined
+    
     if (text || allOcrText) {
       try {
-        medicalCoding = await queryGenAiMedicalCoding(text, allOcrText)
+        // Step 1: Extract diagnosis from the text
+        extractedProcedures = await extractProcedures(text, allOcrText)
+        
+        // Step 2: Generate medical coding based on the diagnosis
+        if (extractedProcedures) {
+          medicalCoding = await queryGenAiMedicalCoding(text, extractedProcedures, allOcrText)
+        }
       } catch (error) {
-        console.error('Error generating medical coding:', error)
+        console.error('Error processing medical data:', error)
       }
     }
 
@@ -80,6 +94,7 @@ export async function submitMedicalData(formData: FormData): Promise<{ text: str
       text,
       files: uploadedFiles,
       ocrResults,
+      extractedProcedures,
       medicalCoding
     }
   } catch (error) {

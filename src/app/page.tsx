@@ -8,6 +8,7 @@ export default function Home() {
     text: string;
     files: string[];
     ocrResults: { [key: string]: string };
+    extractedProcedures?: string;
     medicalCoding?: string;
   } | null>(null);
 
@@ -104,6 +105,19 @@ export default function Home() {
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {result.extractedProcedures && (
+              <div className="mb-4">
+                <h3 className="text-sm font-medium mb-2">
+                  Extracted Diagnosis:
+                </h3>
+                <div className="p-4 bg-primary/5 rounded-lg border border-primary/20">
+                  <pre className="text-sm text-foreground/80 whitespace-pre-wrap">
+                    {result.extractedProcedures}
+                  </pre>
+                </div>
               </div>
             )}
 
