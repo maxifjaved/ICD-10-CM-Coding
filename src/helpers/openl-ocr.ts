@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import fetch from 'node-fetch';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 
@@ -20,88 +18,28 @@ interface ProxyManager {
 
 interface OCRResult {
   success: boolean;
-  locked?: boolean;
-  filename?: string;
-  outputFile?: string;
+  text?: string;
   error?: string;
 }
 
-// File locking functions
-function getLockFilePath(imagePath: string): string {
-  return `${imagePath}.lock`;
-}
-
-function isLockStale(lockFilePath: string, staleLockTimeMinutes: number): boolean {
-  if (!fs.existsSync(lockFilePath)) return false;
-
-  try {
-    const stats = fs.statSync(lockFilePath);
-    const lockAge = (Date.now() - stats.mtimeMs) / (1000 * 60); // age in minutes
-    return lockAge > staleLockTimeMinutes;
-  } catch {
-    return false;
-  }
-}
-
-function createLockFile(imagePath: string, processId: string): boolean {
-  const lockFilePath = getLockFilePath(imagePath);
-  try {
-    fs.writeFileSync(lockFilePath, `${processId}:${Date.now()}`, "utf8");
-    return true;
-  } catch (error) {
-    console.error(`Error creating lock file for ${path.basename(imagePath)}: ${error}`);
-    return false;
-  }
-}
-
-function removeLockFile(imagePath: string): boolean {
-  const lockFilePath = getLockFilePath(imagePath);
-  try {
-    if (fs.existsSync(lockFilePath)) {
-      fs.unlinkSync(lockFilePath);
-    }
-    return true;
-  } catch (error) {
-    console.error(`Error removing lock file for ${path.basename(imagePath)}: ${error}`);
-    return false;
-  }
-}
-
-function acquireLock(imagePath: string, processId: string, staleLockTimeMinutes: number): boolean {
-  const lockFilePath = getLockFilePath(imagePath);
-
-  if (!fs.existsSync(lockFilePath)) {
-    return createLockFile(imagePath, processId);
-  }
-
-  if (isLockStale(lockFilePath, staleLockTimeMinutes)) {
-    console.log(`Found stale lock for ${path.basename(imagePath)}, overriding`);
-    removeLockFile(imagePath);
-    return createLockFile(imagePath, processId);
-  }
-
-  return false;
-}
-
 export async function performOCR(
-  imagePath: string,
-  processId: string,
+  imageBuffer: Buffer,
+  filename: string,
   config: OCRConfig,
   proxyManager: ProxyManager
 ): Promise<OCRResult> {
-  // Try to acquire a lock first
-  if (!acquireLock(imagePath, processId, config.staleLock ? 30 : 0)) {
-    return {
-      success: false,
-      locked: true,
-      filename: path.basename(imagePath),
-      error: "Image is being processed by another instance",
-    };
-  }
-
   try {
-    const filename = path.basename(imagePath);
-    console.log(`Reading image file: ${filename} (${imagePath})`);
+    console.log(`Processing image: ${filename}`);
+
+    // Determine image type from filename
+    const extension = filename.split('.').pop()?.toLowerCase() || '';
+    const mimeType = {
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'bmp': 'image/bmp'
+    }[extension] || 'image/jpeg';
 
     // Create form data
     const formData = new FormData();
@@ -111,9 +49,8 @@ export async function performOCR(
     formData.append("i2ocr_options", "file");
     formData.append("ocr_type", "1");
 
-    // Add the image file to form data
-    const imageBuffer = fs.readFileSync(imagePath);
-    const imageBlob = new Blob([imageBuffer], { type: "image/jpeg" });
+    // Add the image file to form data with correct MIME type
+    const imageBlob = new Blob([imageBuffer], { type: mimeType });
     formData.append("i2ocr_uploadedfile", imageBlob, filename);
 
     formData.append("i2ocr_url", "http://");
@@ -188,12 +125,16 @@ export async function performOCR(
     }
 
     if (!response.ok) {
-      removeLockFile(imagePath);
       throw new Error(`HTTP error! Status: ${response.status}`);
     }
 
     const responseText = await response.text();
     console.log(`Raw API response (first 200 chars): ${responseText.substring(0, 200)}`);
+
+    // Check for error message in response
+    if (responseText.includes("Invalid Image Type")) {
+      throw new Error("Invalid image type. Supported formats: JPG, JPEG, PNG, GIF, BMP");
+    }
 
     // Extract the download link for the text file
     const downloadLinkMatch = responseText.match(
@@ -201,7 +142,6 @@ export async function performOCR(
     );
 
     if (!downloadLinkMatch || !downloadLinkMatch[1]) {
-      removeLockFile(imagePath);
       throw new Error("Could not find download link in response");
     }
 
@@ -256,27 +196,17 @@ export async function performOCR(
     }
 
     if (!textResponse.ok) {
-      removeLockFile(imagePath);
       throw new Error(`Failed to download text file: ${textResponse.status}`);
     }
 
     const textContent = await textResponse.text();
     console.log(`Received OCR text (first 100 chars): ${textContent.substring(0, 100)}`);
 
-    const outputFile = `${path.basename(imagePath, path.extname(imagePath))}.txt`;
-    const outputPath = path.join(path.dirname(imagePath), outputFile);
-    fs.writeFileSync(outputPath, textContent, "utf8");
-    console.log(`Saved OCR text to: ${outputPath}`);
-
-    removeLockFile(imagePath);
-
-    return { success: true, filename, outputFile };
+    return { success: true, text: textContent };
   } catch (error) {
-    removeLockFile(imagePath);
-    console.error(`OCR processing error for ${path.basename(imagePath)}:`, error);
+    console.error(`OCR processing error for ${filename}:`, error);
     return {
       success: false,
-      filename: path.basename(imagePath),
       error: error instanceof Error ? error.message : "Unknown error",
     };
   }

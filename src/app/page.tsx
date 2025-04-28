@@ -10,9 +10,18 @@ export default function Home() {
     ocrResults: { [key: string]: string };
   } | null>(null);
 
+  const [processing, setProcessing] = useState(false);
+
   async function handleSubmit(formData: FormData) {
-    const response = await submitMedicalData(formData);
-    setResult(response);
+    setProcessing(true);
+    try {
+      const response = await submitMedicalData(formData);
+      setResult(response);
+    } catch (error) {
+      console.error("Error submitting data:", error);
+    } finally {
+      setProcessing(false);
+    }
   }
 
   return (
@@ -45,18 +54,19 @@ export default function Home() {
               name="files"
               multiple
               className="w-full p-3 border border-foreground/20 rounded-lg bg-background"
-              accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.bmp"
+              accept=".jpg,.jpeg,.png,.gif,.bmp"
             />
             <p className="mt-1 text-sm text-foreground/60">
-              Supported formats: PDF, DOC, DOCX, TXT, JPG, PNG, GIF, BMP
+              Supported formats: JPG, JPEG, PNG, GIF, BMP
             </p>
           </div>
 
           <button
             type="submit"
-            className="w-full py-3 px-4 bg-primary text-white rounded-lg hover:bg-primary-light transition-colors"
+            disabled={processing}
+            className="w-full py-3 px-4 bg-primary text-white rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50"
           >
-            Submit
+            {processing ? "Processing..." : "Submit"}
           </button>
         </form>
 
@@ -77,21 +87,16 @@ export default function Home() {
                 <ul className="space-y-2">
                   {result.files.map((file, index) => (
                     <li key={index} className="space-y-2">
-                      <a
-                        href={file}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary hover:underline"
-                      >
-                        {file.split("/").pop()}
-                      </a>
-                      {result.ocrResults[file.split("/").pop()!] && (
+                      <span className="text-primary">
+                        {file.split("-").slice(2).join("-")}
+                      </span>
+                      {result.ocrResults[file] && (
                         <div className="pl-4 border-l-2 border-primary/20">
                           <h4 className="text-sm font-medium text-foreground/70">
                             OCR Result:
                           </h4>
                           <p className="text-sm text-foreground/60 whitespace-pre-wrap">
-                            {result.ocrResults[file.split("/").pop()!]}
+                            {result.ocrResults[file]}
                           </p>
                         </div>
                       )}
