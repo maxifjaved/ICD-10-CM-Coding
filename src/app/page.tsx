@@ -40,8 +40,9 @@ export default function Home() {
               id="text"
               name="text"
               rows={6}
-              className="w-full p-3 border border-foreground/20 rounded-lg bg-background"
+              className="w-full p-3 border border-foreground/20 rounded-lg bg-background disabled:opacity-50 disabled:cursor-not-allowed"
               placeholder="Enter your medical text here..."
+              disabled={processing}
             />
           </div>
 
@@ -54,8 +55,9 @@ export default function Home() {
               id="files"
               name="files"
               multiple
-              className="w-full p-3 border border-foreground/20 rounded-lg bg-background"
+              className="w-full p-3 border border-foreground/20 rounded-lg bg-background disabled:opacity-50 disabled:cursor-not-allowed"
               accept=".jpg,.jpeg,.png,.gif,.bmp"
+              disabled={processing}
             />
             <p className="mt-1 text-sm text-foreground/60">
               Supported formats: JPG, JPEG, PNG, GIF, BMP
@@ -65,13 +67,22 @@ export default function Home() {
           <button
             type="submit"
             disabled={processing}
-            className="w-full py-3 px-4 bg-primary text-white rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50"
+            className="w-full py-3 px-4 bg-primary text-white rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {processing ? "Processing..." : "Submit"}
+            {processing ? "Processing... Please Wait" : "Submit"}
           </button>
+
+          {processing && (
+            <div className="flex items-center justify-center mt-4">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary"></div>
+              <span className="ml-3 text-sm text-foreground/80">
+                Analyzing document, this may take a moment...
+              </span>
+            </div>
+          )}
         </form>
 
-        {result && (
+        {result && !processing && (
           <div className="mt-8 p-6 border border-foreground/20 rounded-lg">
             <h2 className="text-xl font-semibold mb-4">Submission Results</h2>
 
