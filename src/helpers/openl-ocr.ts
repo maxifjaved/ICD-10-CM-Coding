@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import fetch from 'node-fetch';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 
@@ -26,12 +25,6 @@ interface OCRResult {
   outputFile?: string;
   error?: string;
 }
-
-// OpenL.io API credentials
-const OPENL_CONFIG = {
-  apiSecret: "6VRWYJLMAPAR9KX2UJ",
-  secretKey: "IEODE9aBhM",
-};
 
 // File locking functions
 function getLockFilePath(imagePath: string): string {
@@ -110,80 +103,87 @@ export async function performOCR(
     const filename = path.basename(imagePath);
     console.log(`Reading image file: ${filename} (${imagePath})`);
 
-    const boundary = "----WebKitFormBoundaryeCcyg0e3MLVhFcGo";
-    const timestamp = Date.now().toString();
-    const nonce = Math.random().toString();
+    // Create form data
+    const formData = new FormData();
+    formData.append("i2ocr_languages", "ir,urd");
+    formData.append("engine_options", "engine_3");
+    formData.append("layout_options", "single_column");
+    formData.append("i2ocr_options", "file");
+    formData.append("ocr_type", "1");
 
-    const signatureData = timestamp + OPENL_CONFIG.apiSecret + OPENL_CONFIG.secretKey;
-    const signature = crypto.createHash("md5").update(signatureData).digest("hex");
+    // Add the image file to form data
+    const imageBuffer = fs.readFileSync(imagePath);
+    const imageBlob = new Blob([imageBuffer], { type: "image/jpeg" });
+    formData.append("i2ocr_uploadedfile", imageBlob, filename);
 
+    formData.append("i2ocr_url", "http://");
+    formData.append("x", "");
+    formData.append("y", "");
+    formData.append("w", "");
+    formData.append("h", "");
+    formData.append("ly", "single_column");
+    formData.append("en", "3");
+
+    // Define headers
     const headers = {
-      accept: "application/json, text/plain, */*",
+      accept: "*/*",
       "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
       "cache-control": "no-cache",
-      "content-type": `multipart/form-data; boundary=${boundary}`,
-      nonce,
+      dnt: "1",
+      origin: "https://www.i2ocr.com",
       pragma: "no-cache",
       priority: "u=1, i",
+      referer: "https://www.i2ocr.com/",
       "sec-ch-ua": '"Not:A-Brand";v="24", "Chromium";v="134"',
       "sec-ch-ua-mobile": "?0",
       "sec-ch-ua-platform": '"macOS"',
       "sec-fetch-dest": "empty",
       "sec-fetch-mode": "cors",
-      "sec-fetch-site": "same-site",
-      secret: OPENL_CONFIG.secretKey,
-      signature,
-      timestamp,
-      "x-api-secret": OPENL_CONFIG.apiSecret,
+      "sec-fetch-site": "same-origin",
       "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+      "x-requested-with": "XMLHttpRequest",
+      cookie: "PHPSESSID=22glcjcs802p9ukn7tc6oho1vv; SERVERID=s3; trial3=1",
     };
 
-    const imageBuffer = fs.readFileSync(imagePath);
-    console.log(`Successfully read ${imageBuffer.length} bytes from file`);
-
-    const formDataParts = [
-      `--${boundary}`,
-      `Content-Disposition: form-data; name="file"; filename="${filename}"`,
-      "Content-Type: image/jpeg",
-      "",
-    ];
-
-    const formDataStart = formDataParts.join("\r\n") + "\r\n";
-    const formDataEnd = "\r\n--" + boundary + "--\r\n";
-
-    const body = Buffer.concat([
-      Buffer.from(formDataStart, "utf8"),
-      imageBuffer,
-      Buffer.from(formDataEnd, "utf8"),
-    ]);
-
-    console.log("Sending request to OpenL.io API...");
+    console.log("Sending request to i2ocr.com...");
 
     let response;
     if (config.proxy) {
       const proxy = await proxyManager.getProxy();
       if (proxy) {
+        console.log(`Using proxy: ${proxy}`);
         const proxyAgent = new HttpsProxyAgent(proxy);
-        response = await fetch("https://api.openl.io/translate/img", {
-          method: "POST",
-          headers,
-          body,
-          agent: proxyAgent,
-          timeout: config.proxyTimeout * 1000,
-        });
+        
+        // Create a controller for timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), config.proxyTimeout * 1000);
+        
+        try {
+          response = await fetch("https://www.i2ocr.com/process_form", {
+            method: "POST",
+            headers: headers,
+            body: formData,
+            agent: proxyAgent,
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
+        
         proxyManager.releaseProxy(proxy);
       } else {
-        response = await fetch("https://api.openl.io/translate/img", {
+        console.log("No proxy available, using direct connection");
+        response = await fetch("https://www.i2ocr.com/process_form", {
           method: "POST",
-          headers,
-          body,
+          headers: headers,
+          body: formData,
         });
       }
     } else {
-      response = await fetch("https://api.openl.io/translate/img", {
+      response = await fetch("https://www.i2ocr.com/process_form", {
         method: "POST",
-        headers,
-        body,
+        headers: headers,
+        body: formData,
       });
     }
 
@@ -195,14 +195,72 @@ export async function performOCR(
     const responseText = await response.text();
     console.log(`Raw API response (first 200 chars): ${responseText.substring(0, 200)}`);
 
-    const responseData = JSON.parse(responseText);
+    // Extract the download link for the text file
+    const downloadLinkMatch = responseText.match(
+      /\$\(\"#download_text\"\)\.attr\(\"href\", \"([^\"]+)\"\)/
+    );
 
-    if (!responseData || !responseData.text) {
+    if (!downloadLinkMatch || !downloadLinkMatch[1]) {
       removeLockFile(imagePath);
-      throw new Error("Invalid response from OpenL.io API (missing text field)");
+      throw new Error("Could not find download link in response");
     }
 
-    const textContent = responseData.text;
+    const downloadUrl = `https://www.i2ocr.com${downloadLinkMatch[1]}`;
+    console.log(`Download URL: ${downloadUrl}`);
+
+    // Download the text file
+    let textResponse;
+    if (config.proxy) {
+      const proxy = await proxyManager.getProxy();
+      if (proxy) {
+        console.log(`Using proxy for download: ${proxy}`);
+        const proxyAgent = new HttpsProxyAgent(proxy);
+        
+        // Create a controller for timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), config.proxyTimeout * 1000);
+        
+        try {
+          textResponse = await fetch(downloadUrl, {
+            headers: {
+              cookie: headers.cookie,
+              referer: "https://www.i2ocr.com/",
+              "user-agent": headers["user-agent"],
+            },
+            agent: proxyAgent,
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
+        
+        proxyManager.releaseProxy(proxy);
+      } else {
+        console.log("No proxy available for download, using direct connection");
+        textResponse = await fetch(downloadUrl, {
+          headers: {
+            cookie: headers.cookie,
+            referer: "https://www.i2ocr.com/",
+            "user-agent": headers["user-agent"],
+          },
+        });
+      }
+    } else {
+      textResponse = await fetch(downloadUrl, {
+        headers: {
+          cookie: headers.cookie,
+          referer: "https://www.i2ocr.com/",
+          "user-agent": headers["user-agent"],
+        },
+      });
+    }
+
+    if (!textResponse.ok) {
+      removeLockFile(imagePath);
+      throw new Error(`Failed to download text file: ${textResponse.status}`);
+    }
+
+    const textContent = await textResponse.text();
     console.log(`Received OCR text (first 100 chars): ${textContent.substring(0, 100)}`);
 
     const outputFile = `${path.basename(imagePath, path.extname(imagePath))}.txt`;

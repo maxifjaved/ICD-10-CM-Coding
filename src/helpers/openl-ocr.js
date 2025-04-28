@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 /**
- * OpenL.io Batch Image OCR Script (Bun Version with Proxy Support)
+ * i2ocr Batch Image OCR Script (Bun Version with Proxy Support)
  *
  * This script recursively finds all image files from a specified folder and its subfolders,
- * then sends them to openl.io for OCR processing using a worker pool through rotating proxies.
+ * then sends them to i2ocr.com for OCR processing using a worker pool through rotating proxies.
  * It downloads and saves the recognized text files in the same location as the source images.
  *
- * Usage: bun run openl-ocr.js <path-to-folder> [options]
+ * Usage: bun run ocr.js <path-to-folder> [options]
  *
  * Options:
  *   --batch-size=<number>   Number of concurrent active requests (default: 5)
@@ -20,12 +20,7 @@
 
 // Check and install required dependencies
 async function checkAndInstallDependencies() {
-  const requiredPackages = [
-    "node-fetch@2.6.7",
-    "https-proxy-agent",
-    "cheerio",
-    "crypto",
-  ];
+  const requiredPackages = ["node-fetch@2.6.7", "https-proxy-agent", "cheerio"];
 
   try {
     console.log("Checking for required dependencies...");
@@ -58,29 +53,22 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
-import crypto from "crypto";
-import cloudscraper from "cloudscraper";
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Now dynamically import the packages that might have been installed
-let HttpsProxyAgent, cheerio;
+let fetch, HttpsProxyAgent, cheerio;
 
 try {
+  fetch = (await import("node-fetch")).default;
   HttpsProxyAgent = (await import("https-proxy-agent")).HttpsProxyAgent;
   cheerio = await import("cheerio");
 } catch (error) {
   console.error(`Error importing dependencies: ${error.message}`);
   process.exit(1);
 }
-
-// OpenL.io API credentials
-const OPENL_CONFIG = {
-  apiSecret: "6VRWYJLMAPAR9KX2UJ",
-  secretKey: "IEODE9aBhM",
-};
 
 // Default configuration
 const DEFAULT_CONFIG = {
@@ -150,51 +138,6 @@ function parseArgs(args) {
 // Sleep helper function
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// Generate OpenL.io required headers
-function generateOpenLHeaders(apiSecret, secretKey) {
-  const timestamp = Date.now().toString();
-  const nonce = Math.random().toString();
-
-  // Create signature as per OpenL.io requirements
-  const signatureData = timestamp + apiSecret + secretKey;
-  const signature = crypto
-    .createHash("md5")
-    .update(signatureData)
-    .digest("hex");
-
-  console.log(`Generated authentication parameters:
-    - timestamp: ${timestamp}
-    - nonce: ${nonce}
-    - signature: ${signature} (from ${signatureData.replace(
-    secretKey,
-    "***REDACTED***"
-  )})
-  `);
-
-  return {
-    accept: "application/json, text/plain, */*",
-    "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
-    "cache-control": "no-cache",
-    pragma: "no-cache",
-    priority: "u=1, i",
-    "sec-ch-ua": '"Not:A-Brand";v="24", "Chromium";v="134"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"macOS"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-site",
-    nonce: nonce,
-    secret: secretKey,
-    signature: signature,
-    timestamp: timestamp,
-    "x-api-secret": apiSecret,
-    "user-agent":
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-    referrer: "https://openl.io/",
-    referrerPolicy: "strict-origin-when-cross-origin",
-  };
 }
 
 // File locking functions
@@ -315,21 +258,19 @@ class ProxyManager {
       console.log("Fetching fresh proxy list...");
 
       // Fetch the proxy list
-      const response = await cloudscraper.get({
-        uri: "https://free-proxy-list.net/",
+      const response = await fetch("https://free-proxy-list.net/", {
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
         },
-        timeout: 10000,
-        resolveWithFullResponse: true,
+        timeout: 10000, // 10-second timeout
       });
 
-      if (response.statusCode !== 200) {
-        throw new Error(`Failed to fetch proxy list: ${response.statusCode}`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch proxy list: ${response.status}`);
       }
 
-      const html = response.body;
+      const html = await response.text();
 
       // Parse the HTML to extract proxies
       const $ = cheerio.load(html);
@@ -472,125 +413,76 @@ class ProxyManager {
   async fetchWithProxy(url, options, retries = 3) {
     if (!this.config.useProxy) {
       // No proxy, use direct connection
-      return cloudscraper({
-        method: options.method || "GET",
-        uri: url,
-        headers: options.headers,
-        body: options.body,
-        encoding: null,
-        resolveWithFullResponse: true,
-        timeout: this.config.proxyTimeout * 1000,
-      });
+      return fetch(url, options);
     }
+
     let lastError = null;
     let proxy = null;
-    let lastResponseData = null;
+
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
+        // Get a proxy
         proxy = await this.getProxy();
+
         if (!proxy) {
           console.log("No proxy available, using direct connection");
-          return cloudscraper({
-            method: options.method || "GET",
-            uri: url,
-            headers: options.headers,
-            body: options.body,
-            encoding: null,
-            resolveWithFullResponse: true,
-            timeout: this.config.proxyTimeout * 1000,
-          });
+          return fetch(url, options);
         }
+
         console.log(
           `Using proxy ${proxy.ip}:${proxy.port} (attempt ${
             attempt + 1
           }/${retries})`
         );
+
+        // Create proxy agent - fixed to work with the package's export
         const proxyUrl = `http://${proxy.ip}:${proxy.port}`;
-        const response = await cloudscraper({
-          method: options.method || "GET",
-          uri: url,
-          headers: options.headers,
-          body: options.body,
-          encoding: null,
-          resolveWithFullResponse: true,
-          timeout: this.config.proxyTimeout * 1000,
-          proxy: proxyUrl,
+        const proxyAgent = new HttpsProxyAgent(proxyUrl);
+
+        // Set timeout
+        const timeoutMs = this.config.proxyTimeout * 1000;
+
+        // Make the request with the proxy
+        const response = await fetch(url, {
+          ...options,
+          agent: proxyAgent,
+          timeout: timeoutMs,
         });
-        if (response.statusCode >= 200 && response.statusCode < 300) {
+
+        // Check if request was successful
+        if (response.ok) {
           return response;
         } else {
-          lastResponseData = {
-            status: response.statusCode,
-            statusText: response.statusMessage,
-            headers: response.headers,
-            body: response.body?.toString("utf8").substring(0, 1000),
-          };
-          throw new Error(
-            `HTTP error: ${response.statusCode} - ${response.statusMessage}`
-          );
+          throw new Error(`HTTP error: ${response.status}`);
         }
       } catch (error) {
         lastError = error;
-        let errorDetails = `Proxy error (${proxy?.ip}:${proxy?.port}): ${error.message}`;
-        if (lastResponseData) {
-          errorDetails += `\nResponse Status: ${lastResponseData.status} ${lastResponseData.statusText}`;
-          errorDetails += `\nResponse Headers: ${JSON.stringify(
-            lastResponseData.headers,
-            null,
-            2
-          )}`;
-          if (lastResponseData.body) {
-            errorDetails += `\nResponse Body: ${lastResponseData.body}`;
-          }
-        }
-        console.log(errorDetails);
+        console.log(
+          `Proxy error (${proxy?.ip}:${proxy?.port}): ${error.message}`
+        );
+
+        // Mark the proxy as failed
         if (proxy) {
           this.markProxyFailed(proxy);
         }
+
+        // Wait a bit before trying the next proxy
         await sleep(1000);
       }
     }
+
     // All retries failed, try direct connection
     console.log("All proxy attempts failed, trying direct connection");
     try {
-      const response = await cloudscraper({
-        method: options.method || "GET",
-        uri: url,
-        headers: options.headers,
-        body: options.body,
-        encoding: null,
-        resolveWithFullResponse: true,
-        timeout: this.config.proxyTimeout * 1000,
-      });
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        return response;
-      } else {
-        lastResponseData = {
-          status: response.statusCode,
-          statusText: response.statusMessage,
-          headers: response.headers,
-          body: response.body?.toString("utf8").substring(0, 1000),
-        };
-        throw new Error(
-          `Direct HTTP error: ${response.statusCode} - ${response.statusMessage}`
-        );
-      }
+      return await fetch(url, options);
     } catch (directError) {
-      console.error("Direct connection error:", directError.message);
-      if (lastResponseData) {
-        throw new Error(
-          `Failed after multiple attempts. Last status: ${
-            lastResponseData.status
-          }. Error: ${lastError?.message || directError.message}`
-        );
-      } else {
-        throw lastError || directError;
-      }
+      // If direct connection also fails, throw the original proxy error
+      throw lastError || new Error("Failed to fetch after multiple retries");
     }
   }
 }
 
-// Perform OCR on a single image using OpenL.io API with proxy support
+// Perform OCR on a single image
 async function performOCR(imagePath, processId, config, proxyManager) {
   // Try to acquire a lock first
   if (!acquireLock(imagePath, processId, config.staleLockTime)) {
@@ -605,93 +497,56 @@ async function performOCR(imagePath, processId, config, proxyManager) {
   try {
     // Get the filename from the path
     const filename = path.basename(imagePath);
-    console.log(`Reading image file: ${filename} (${imagePath})`);
 
-    // Use a fixed boundary as shown in the working example
-    const boundary = "----WebKitFormBoundaryeCcyg0e3MLVhFcGo";
+    // Create form data using Bun's native FormData
+    const formData = new FormData();
+    formData.append("i2ocr_languages", "ir,urd");
+    formData.append("engine_options", "engine_3");
+    formData.append("layout_options", "single_column");
+    formData.append("i2ocr_options", "file");
+    formData.append("ocr_type", "1");
 
-    // Generate timestamps etc.
-    const timestamp = Date.now().toString();
-    const nonce = Math.random().toString();
+    // Add the image file to form data using Bun's file()
+    const imageFile = file(imagePath);
+    formData.append("i2ocr_uploadedfile", imageFile, filename);
 
-    // Create signature as per OpenL.io requirements
-    const signatureData =
-      timestamp + OPENL_CONFIG.apiSecret + OPENL_CONFIG.secretKey;
-    const signature = crypto
-      .createHash("md5")
-      .update(signatureData)
-      .digest("hex");
+    formData.append("i2ocr_url", "http://");
+    formData.append("x", "");
+    formData.append("y", "");
+    formData.append("w", "");
+    formData.append("h", "");
+    formData.append("ly", "single_column");
+    formData.append("en", "3");
 
-    console.log(`Generated authentication parameters:
-      - timestamp: ${timestamp}
-      - nonce: ${nonce}
-      - signature: ${signature}
-    `);
-
-    // Define headers exactly as in the working example
+    // Define headers
     const headers = {
-      accept: "application/json, text/plain, */*",
+      accept: "*/*",
       "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
       "cache-control": "no-cache",
-      "content-type": `multipart/form-data; boundary=${boundary}`,
-      nonce: nonce,
+      dnt: "1",
+      origin: "https://www.i2ocr.com",
       pragma: "no-cache",
       priority: "u=1, i",
+      referer: "https://www.i2ocr.com/",
       "sec-ch-ua": '"Not:A-Brand";v="24", "Chromium";v="134"',
       "sec-ch-ua-mobile": "?0",
       "sec-ch-ua-platform": '"macOS"',
       "sec-fetch-dest": "empty",
       "sec-fetch-mode": "cors",
-      "sec-fetch-site": "same-site",
-      secret: OPENL_CONFIG.secretKey,
-      signature: signature,
-      timestamp: timestamp,
-      "x-api-secret": OPENL_CONFIG.apiSecret,
+      "sec-fetch-site": "same-origin",
       "user-agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+      "x-requested-with": "XMLHttpRequest",
+      cookie: "PHPSESSID=22glcjcs802p9ukn7tc6oho1vv; SERVERID=s3; trial3=1",
     };
-
-    // Read the image file
-    const imageBuffer = fs.readFileSync(imagePath);
-    console.log(`Successfully read ${imageBuffer.length} bytes from file`);
-
-    // Create form data manually, strictly following the working example format
-    console.log("Creating manual multipart/form-data body...");
-
-    // Start with boundary
-    let formDataParts = [];
-    formDataParts.push(`--${boundary}`);
-    formDataParts.push(
-      'Content-Disposition: form-data; name="file"; filename="' + filename + '"'
-    );
-    formDataParts.push("Content-Type: image/jpeg");
-    formDataParts.push(""); // Empty line before content
-
-    // We'll use a raw body instead of FormData
-    const formDataStart = formDataParts.join("\r\n") + "\r\n";
-    const formDataEnd = "\r\n--" + boundary + "--\r\n";
-
-    // Create the complete body as a Buffer
-    const body = Buffer.concat([
-      Buffer.from(formDataStart, "utf8"),
-      imageBuffer,
-      Buffer.from(formDataEnd, "utf8"),
-    ]);
-
-    console.log(
-      "Sending request to OpenL.io API with manual multipart body..."
-    );
-    console.log(`Request URL: https://api.openl.io/translate/img`);
-    console.log(`Request method: POST`);
-    console.log(`Total body size: ${body.length} bytes`);
 
     // Send the request through a proxy
     const response = await proxyManager.fetchWithProxy(
-      "https://api.openl.io/translate/img",
+      "https://www.i2ocr.com/process_form",
       {
         method: "POST",
         headers: headers,
-        body: body,
+        body: formData,
       },
       config.proxyRetries
     );
@@ -702,34 +557,38 @@ async function performOCR(imagePath, processId, config, proxyManager) {
       throw new Error(`HTTP error! Status: ${response.status}`);
     }
 
-    // Get the response text first to debug
-    let responseText;
-    try {
-      responseText = await response.text();
-      console.log(
-        `Raw API response (first 200 chars): ${responseText.substring(0, 200)}`
+    // Get the response text
+    const responseText = await response.text();
+
+    // Extract the download link for the text file
+    const downloadLinkMatch = responseText.match(
+      /\$\(\"#download_text\"\)\.attr\(\"href\", \"([^\"]+)\"\)/
+    );
+
+    if (downloadLinkMatch && downloadLinkMatch[1]) {
+      const downloadUrl = `https://www.i2ocr.com${downloadLinkMatch[1]}`;
+
+      // Download the text file through a proxy
+      const textResponse = await proxyManager.fetchWithProxy(
+        downloadUrl,
+        {
+          headers: {
+            cookie: headers.cookie,
+            referer: "https://www.i2ocr.com/",
+            "user-agent": headers["user-agent"],
+          },
+        },
+        config.proxyRetries
       );
 
-      // Try to parse as JSON
-      const responseData = JSON.parse(responseText);
-
-      if (!responseData || !responseData.text) {
-        // Remove lock file if processing fails
+      if (!textResponse.ok) {
+        // Remove lock file if download fails
         removeLockFile(imagePath);
-        console.error(
-          "Invalid response structure:",
-          JSON.stringify(responseData, null, 2)
-        );
-        throw new Error(
-          "Invalid response from OpenL.io API (missing text field)"
-        );
+        throw new Error(`Failed to download text file: ${textResponse.status}`);
       }
 
-      // Get the OCR text result
-      const textContent = responseData.text;
-      console.log(
-        `Received OCR text (first 100 chars): ${textContent.substring(0, 100)}`
-      );
+      // Get the text content
+      const textContent = await textResponse.text();
 
       // Save the text to a file with the same name as the image but .txt extension
       const outputFile = `${path.basename(
@@ -738,32 +597,19 @@ async function performOCR(imagePath, processId, config, proxyManager) {
       )}.txt`;
       const outputPath = path.join(path.dirname(imagePath), outputFile);
       fs.writeFileSync(outputPath, textContent, "utf8");
-      console.log(`Saved OCR text to: ${outputPath}`);
 
       // Remove the lock file after successful processing
       removeLockFile(imagePath);
 
       return { success: true, filename, outputFile };
-    } catch (parseError) {
-      // Remove lock file if an exception occurs during parsing
+    } else {
+      // Remove lock file if processing fails
       removeLockFile(imagePath);
-      console.error("Error parsing API response:", parseError);
-      console.error("Raw response:", responseText);
-      return {
-        success: false,
-        filename: path.basename(imagePath),
-        error: `Error parsing API response: ${
-          parseError.message
-        }. Raw response: ${responseText.substring(0, 200)}...`,
-      };
+      throw new Error("Could not find download link in response");
     }
   } catch (error) {
     // Remove lock file if an exception occurs
     removeLockFile(imagePath);
-    console.error(
-      `OCR processing error for ${path.basename(imagePath)}:`,
-      error
-    );
     return {
       success: false,
       filename: path.basename(imagePath),
@@ -787,180 +633,90 @@ async function performOCRDirect(imagePath, processId, config) {
   try {
     // Get the filename from the path
     const filename = path.basename(imagePath);
-    console.log(`[DIRECT] Reading image file: ${filename} (${imagePath})`);
 
-    // Use a fixed boundary as shown in the working example
-    const boundary = "----WebKitFormBoundaryeCcyg0e3MLVhFcGo";
+    // Create form data using Bun's native FormData
+    const formData = new FormData();
+    formData.append("i2ocr_languages", "ir,urd");
+    formData.append("engine_options", "engine_3");
+    formData.append("layout_options", "single_column");
+    formData.append("i2ocr_options", "file");
+    formData.append("ocr_type", "1");
 
-    // Generate timestamps etc.
-    const timestamp = Date.now().toString();
-    const nonce = Math.random().toString();
+    // Add the image file to form data using Bun's file()
+    const imageFile = file(imagePath);
+    formData.append("i2ocr_uploadedfile", imageFile, filename);
 
-    // Create signature as per OpenL.io requirements
-    const signatureData =
-      timestamp + OPENL_CONFIG.apiSecret + OPENL_CONFIG.secretKey;
-    const signature = crypto
-      .createHash("md5")
-      .update(signatureData)
-      .digest("hex");
+    formData.append("i2ocr_url", "http://");
+    formData.append("x", "");
+    formData.append("y", "");
+    formData.append("w", "");
+    formData.append("h", "");
+    formData.append("ly", "single_column");
+    formData.append("en", "3");
 
-    console.log(`[DIRECT] Generated authentication parameters:
-      - timestamp: ${timestamp}
-      - nonce: ${nonce}
-      - signature: ${signature}
-    `);
-
-    // Define headers exactly as in the working example
+    // Define headers
     const headers = {
-      accept: "application/json, text/plain, */*",
+      accept: "*/*",
       "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
       "cache-control": "no-cache",
-      "content-type": `multipart/form-data; boundary=${boundary}`,
-      nonce: nonce,
+      dnt: "1",
+      origin: "https://www.i2ocr.com",
       pragma: "no-cache",
       priority: "u=1, i",
+      referer: "https://www.i2ocr.com/",
       "sec-ch-ua": '"Not:A-Brand";v="24", "Chromium";v="134"',
       "sec-ch-ua-mobile": "?0",
       "sec-ch-ua-platform": '"macOS"',
       "sec-fetch-dest": "empty",
       "sec-fetch-mode": "cors",
-      "sec-fetch-site": "same-site",
-      secret: OPENL_CONFIG.secretKey,
-      signature: signature,
-      timestamp: timestamp,
-      "x-api-secret": OPENL_CONFIG.apiSecret,
+      "sec-fetch-site": "same-origin",
       "user-agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-      referrer: "https://openl.io/",
-      referrerPolicy: "strict-origin-when-cross-origin",
+      "x-requested-with": "XMLHttpRequest",
+      cookie: "PHPSESSID=22glcjcs802p9ukn7tc6oho1vv; SERVERID=s3; trial3=1",
     };
 
-    // Read the image file
-    const imageBuffer = fs.readFileSync(imagePath);
-    console.log(
-      `[DIRECT] Successfully read ${imageBuffer.length} bytes from file`
-    );
-
-    // Create form data manually, strictly following the working example format
-    console.log("[DIRECT] Creating manual multipart/form-data body...");
-
-    // Start with boundary
-    let formDataParts = [];
-    formDataParts.push(`--${boundary}`);
-    formDataParts.push(
-      'Content-Disposition: form-data; name="file"; filename="' + filename + '"'
-    );
-    formDataParts.push("Content-Type: image/jpeg");
-    formDataParts.push(""); // Empty line before content
-
-    // We'll use a raw body instead of FormData
-    const formDataStart = formDataParts.join("\r\n") + "\r\n";
-    const formDataEnd = "\r\n--" + boundary + "--\r\n";
-
-    // Create the complete body as a Buffer
-    const body = Buffer.concat([
-      Buffer.from(formDataStart, "utf8"),
-      imageBuffer,
-      Buffer.from(formDataEnd, "utf8"),
-    ]);
-
-    console.log(
-      "[DIRECT] Sending request to OpenL.io API with manual multipart body..."
-    );
-    console.log(`[DIRECT] Request URL: https://api.openl.io/translate/img`);
-    console.log(`[DIRECT] Request method: POST`);
-    console.log(`[DIRECT] Total body size: ${body.length} bytes`);
-
-    // Send the request directly
-    let response;
-    try {
-      response = await cloudscraper({
-        method: "POST",
-        uri: "https://api.openl.io/translate/img",
-        headers: headers,
-        body: body,
-        encoding: null,
-        resolveWithFullResponse: true,
-      });
-
-      console.log(
-        `[DIRECT] Response status: ${response.statusCode} ${response.statusMessage}`
-      );
-
-      // Log response headers
-      const responseHeaders = {};
-      response.headers.forEach((value, key) => {
-        responseHeaders[key] = value;
-      });
-      console.log(
-        `[DIRECT] Response headers: ${JSON.stringify(responseHeaders, null, 2)}`
-      );
-    } catch (fetchError) {
-      console.error("[DIRECT] Fetch error:", fetchError);
-      throw fetchError;
-    }
+    // Send the request directly (no proxy)
+    const response = await fetch("https://www.i2ocr.com/process_form", {
+      method: "POST",
+      headers: headers,
+      body: formData,
+    });
 
     if (!response.ok) {
-      // Try to get more information about the error
-      let errorText = "";
-      try {
-        errorText = await response.text();
-        console.error(`[DIRECT] Error response body: ${errorText}`);
-      } catch (textError) {
-        console.error(
-          "[DIRECT] Could not read error response body:",
-          textError
-        );
-      }
-
       // Remove lock file if request fails
       removeLockFile(imagePath);
-      throw new Error(
-        `HTTP error! Status: ${
-          response.statusCode
-        }, Body: ${errorText.substring(0, 200)}`
-      );
+      throw new Error(`HTTP error! Status: ${response.status}`);
     }
 
-    // Get the response text first to debug
-    let responseText;
-    try {
-      responseText = await response.text();
-      console.log(
-        `[DIRECT] Raw API response (first 200 chars): ${responseText.substring(
-          0,
-          200
-        )}`
-      );
+    // Get the response text
+    const responseText = await response.text();
 
-      // Try to parse as JSON
-      const responseData = JSON.parse(responseText);
+    // Extract the download link for the text file
+    const downloadLinkMatch = responseText.match(
+      /\$\(\"#download_text\"\)\.attr\(\"href\", \"([^\"]+)\"\)/
+    );
 
-      if (!responseData) {
-        console.error("[DIRECT] Response is not valid JSON");
+    if (downloadLinkMatch && downloadLinkMatch[1]) {
+      const downloadUrl = `https://www.i2ocr.com${downloadLinkMatch[1]}`;
+
+      // Download the text file directly
+      const textResponse = await fetch(downloadUrl, {
+        headers: {
+          cookie: headers.cookie,
+          referer: "https://www.i2ocr.com/",
+          "user-agent": headers["user-agent"],
+        },
+      });
+
+      if (!textResponse.ok) {
+        // Remove lock file if download fails
         removeLockFile(imagePath);
-        throw new Error("Invalid JSON response from OpenL.io API");
+        throw new Error(`Failed to download text file: ${textResponse.status}`);
       }
 
-      if (!responseData.text) {
-        console.error(
-          "[DIRECT] Response JSON missing text field:",
-          JSON.stringify(responseData, null, 2)
-        );
-        removeLockFile(imagePath);
-        throw new Error(
-          "Invalid response structure from OpenL.io API (missing text field)"
-        );
-      }
-
-      // Get the OCR text result
-      const textContent = responseData.text;
-      console.log(
-        `[DIRECT] Received OCR text (first 100 chars): ${textContent.substring(
-          0,
-          100
-        )}`
-      );
+      // Get the text content
+      const textContent = await textResponse.text();
 
       // Save the text to a file with the same name as the image but .txt extension
       const outputFile = `${path.basename(
@@ -969,32 +725,19 @@ async function performOCRDirect(imagePath, processId, config) {
       )}.txt`;
       const outputPath = path.join(path.dirname(imagePath), outputFile);
       fs.writeFileSync(outputPath, textContent, "utf8");
-      console.log(`[DIRECT] Saved OCR text to: ${outputPath}`);
 
       // Remove the lock file after successful processing
       removeLockFile(imagePath);
 
       return { success: true, filename, outputFile };
-    } catch (parseError) {
-      // Remove lock file if an exception occurs during parsing
+    } else {
+      // Remove lock file if processing fails
       removeLockFile(imagePath);
-      console.error("[DIRECT] Error parsing API response:", parseError);
-      console.error("[DIRECT] Raw response:", responseText);
-      return {
-        success: false,
-        filename: path.basename(imagePath),
-        error: `Error parsing API response: ${
-          parseError.message
-        }. Raw response: ${responseText.substring(0, 200)}...`,
-      };
+      throw new Error("Could not find download link in response");
     }
   } catch (error) {
     // Remove lock file if an exception occurs
     removeLockFile(imagePath);
-    console.error(
-      `[DIRECT] OCR processing error for ${path.basename(imagePath)}:`,
-      error
-    );
     return {
       success: false,
       filename: path.basename(imagePath),
@@ -1346,7 +1089,7 @@ async function main() {
     console.error(
       "Error: Please provide the path to a folder containing images."
     );
-    console.log("Usage: bun run openl-ocr.js <path-to-folder> [options]");
+    console.log("Usage: bun run ocr.js <path-to-folder> [options]");
     console.log("\nOptions:");
     console.log(
       "  --batch-size=<number>   Number of concurrent requests (default: 5)"
@@ -1434,7 +1177,7 @@ async function main() {
       console.log(`Available proxies: ${proxyManager.proxies.length}`);
     }
 
-    console.log("Starting OCR processing with OpenL.io API...");
+    console.log("Starting OCR processing...");
 
     // Update progress file with image count
     createProgressFile({
