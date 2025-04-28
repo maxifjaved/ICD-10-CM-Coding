@@ -42,7 +42,6 @@ export default function Home() {
               rows={6}
               className="w-full p-3 border border-foreground/20 rounded-lg bg-background"
               placeholder="Enter your medical text here..."
-              required
             />
           </div>
 
