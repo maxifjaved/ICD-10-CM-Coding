@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.0",
     "cheerio": "^1.0.0",
     "cloudscraper": "^4.6.0",
     "https-proxy-agent": "^7.0.6",
