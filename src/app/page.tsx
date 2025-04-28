@@ -7,6 +7,7 @@ export default function Home() {
   const [result, setResult] = useState<{
     text: string;
     files: string[];
+    ocrResults: { [key: string]: string };
   } | null>(null);
 
   async function handleSubmit(formData: FormData) {
@@ -44,10 +45,10 @@ export default function Home() {
               name="files"
               multiple
               className="w-full p-3 border border-foreground/20 rounded-lg bg-background"
-              accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png"
+              accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.bmp"
             />
             <p className="mt-1 text-sm text-foreground/60">
-              Supported formats: PDF, DOC, DOCX, TXT, JPG, PNG
+              Supported formats: PDF, DOC, DOCX, TXT, JPG, PNG, GIF, BMP
             </p>
           </div>
 
@@ -71,11 +72,11 @@ export default function Home() {
             </div>
 
             {result.files.length > 0 && (
-              <div>
+              <div className="mb-4">
                 <h3 className="text-sm font-medium mb-2">Uploaded Files:</h3>
                 <ul className="space-y-2">
                   {result.files.map((file, index) => (
-                    <li key={index}>
+                    <li key={index} className="space-y-2">
                       <a
                         href={file}
                         target="_blank"
@@ -84,6 +85,16 @@ export default function Home() {
                       >
                         {file.split("/").pop()}
                       </a>
+                      {result.ocrResults[file.split("/").pop()!] && (
+                        <div className="pl-4 border-l-2 border-primary/20">
+                          <h4 className="text-sm font-medium text-foreground/70">
+                            OCR Result:
+                          </h4>
+                          <p className="text-sm text-foreground/60 whitespace-pre-wrap">
+                            {result.ocrResults[file.split("/").pop()!]}
+                          </p>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>

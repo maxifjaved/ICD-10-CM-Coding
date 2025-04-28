@@ -59,16 +59,16 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import crypto from "crypto";
+import cloudscraper from "cloudscraper";
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Now dynamically import the packages that might have been installed
-let fetch, HttpsProxyAgent, cheerio;
+let HttpsProxyAgent, cheerio;
 
 try {
-  fetch = (await import("node-fetch")).default;
   HttpsProxyAgent = (await import("https-proxy-agent")).HttpsProxyAgent;
   cheerio = await import("cheerio");
 } catch (error) {
@@ -315,19 +315,21 @@ class ProxyManager {
       console.log("Fetching fresh proxy list...");
 
       // Fetch the proxy list
-      const response = await fetch("https://free-proxy-list.net/", {
+      const response = await cloudscraper.get({
+        uri: "https://free-proxy-list.net/",
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
         },
-        timeout: 10000, // 10-second timeout
+        timeout: 10000,
+        resolveWithFullResponse: true,
       });
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch proxy list: ${response.status}`);
+      if (response.statusCode !== 200) {
+        throw new Error(`Failed to fetch proxy list: ${response.statusCode}`);
       }
 
-      const html = await response.text();
+      const html = response.body;
 
       // Parse the HTML to extract proxies
       const $ = cheerio.load(html);
@@ -470,92 +472,66 @@ class ProxyManager {
   async fetchWithProxy(url, options, retries = 3) {
     if (!this.config.useProxy) {
       // No proxy, use direct connection
-      return fetch(url, options);
+      return cloudscraper({
+        method: options.method || "GET",
+        uri: url,
+        headers: options.headers,
+        body: options.body,
+        encoding: null,
+        resolveWithFullResponse: true,
+        timeout: this.config.proxyTimeout * 1000,
+      });
     }
-
     let lastError = null;
     let proxy = null;
     let lastResponseData = null;
-
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
-        // Get a proxy
         proxy = await this.getProxy();
-
         if (!proxy) {
           console.log("No proxy available, using direct connection");
-          return fetch(url, options);
+          return cloudscraper({
+            method: options.method || "GET",
+            uri: url,
+            headers: options.headers,
+            body: options.body,
+            encoding: null,
+            resolveWithFullResponse: true,
+            timeout: this.config.proxyTimeout * 1000,
+          });
         }
-
         console.log(
           `Using proxy ${proxy.ip}:${proxy.port} (attempt ${
             attempt + 1
           }/${retries})`
         );
-
-        // Print some details about what we're sending
-        console.log(`URL: ${url}`);
-        console.log(`Method: ${options.method || "GET"}`);
-
-        // Log headers but sanitize sensitive values
-        const sanitizedHeaders = { ...options.headers };
-        if (sanitizedHeaders.secret) sanitizedHeaders.secret = "***REDACTED***";
-        if (sanitizedHeaders.signature)
-          sanitizedHeaders.signature = "***REDACTED***";
-        if (sanitizedHeaders["x-api-secret"])
-          sanitizedHeaders["x-api-secret"] = "***REDACTED***";
-        console.log(`Headers: ${JSON.stringify(sanitizedHeaders, null, 2)}`);
-
-        // Create proxy agent - fixed to work with the package's export
         const proxyUrl = `http://${proxy.ip}:${proxy.port}`;
-        const proxyAgent = new HttpsProxyAgent(proxyUrl);
-
-        // Set timeout
-        const timeoutMs = this.config.proxyTimeout * 1000;
-
-        // Make the request with the proxy
-        const response = await fetch(url, {
-          ...options,
-          agent: proxyAgent,
-          timeout: timeoutMs,
+        const response = await cloudscraper({
+          method: options.method || "GET",
+          uri: url,
+          headers: options.headers,
+          body: options.body,
+          encoding: null,
+          resolveWithFullResponse: true,
+          timeout: this.config.proxyTimeout * 1000,
+          proxy: proxyUrl,
         });
-
-        // Check if request was successful
-        if (response.ok) {
+        if (response.statusCode >= 200 && response.statusCode < 300) {
           return response;
         } else {
-          // Clone the response and get more details
-          const clonedResponse = response.clone();
-          let responseText = "";
-          try {
-            responseText = await clonedResponse.text();
-          } catch (e) {
-            responseText = "Could not read response body";
-          }
-
-          // Log response headers
-          const responseHeaders = {};
-          response.headers.forEach((value, key) => {
-            responseHeaders[key] = value;
-          });
-
           lastResponseData = {
-            status: response.status,
-            statusText: response.statusText,
-            headers: responseHeaders,
-            body: responseText.substring(0, 1000), // Limit to 1000 chars to avoid huge logs
+            status: response.statusCode,
+            statusText: response.statusMessage,
+            headers: response.headers,
+            body: response.body?.toString("utf8").substring(0, 1000),
           };
-
           throw new Error(
-            `HTTP error: ${response.status} - ${response.statusText}`
+            `HTTP error: ${response.statusCode} - ${response.statusMessage}`
           );
         }
       } catch (error) {
         lastError = error;
-
         let errorDetails = `Proxy error (${proxy?.ip}:${proxy?.port}): ${error.message}`;
-
-        // Add additional response data if we have it
         if (lastResponseData) {
           errorDetails += `\nResponse Status: ${lastResponseData.status} ${lastResponseData.statusText}`;
           errorDetails += `\nResponse Headers: ${JSON.stringify(
@@ -567,74 +543,40 @@ class ProxyManager {
             errorDetails += `\nResponse Body: ${lastResponseData.body}`;
           }
         }
-
         console.log(errorDetails);
-
-        // Mark the proxy as failed
         if (proxy) {
           this.markProxyFailed(proxy);
         }
-
-        // Wait a bit before trying the next proxy
         await sleep(1000);
       }
     }
-
     // All retries failed, try direct connection
     console.log("All proxy attempts failed, trying direct connection");
     try {
-      console.log("Making direct request to:", url);
-      const sanitizedHeaders = { ...options.headers };
-      if (sanitizedHeaders.secret) sanitizedHeaders.secret = "***REDACTED***";
-      if (sanitizedHeaders.signature)
-        sanitizedHeaders.signature = "***REDACTED***";
-      if (sanitizedHeaders["x-api-secret"])
-        sanitizedHeaders["x-api-secret"] = "***REDACTED***";
-      console.log(`Headers: ${JSON.stringify(sanitizedHeaders, null, 2)}`);
-
-      const response = await fetch(url, options);
-
-      // Check if direct request was successful
-      if (response.ok) {
+      const response = await cloudscraper({
+        method: options.method || "GET",
+        uri: url,
+        headers: options.headers,
+        body: options.body,
+        encoding: null,
+        resolveWithFullResponse: true,
+        timeout: this.config.proxyTimeout * 1000,
+      });
+      if (response.statusCode >= 200 && response.statusCode < 300) {
         return response;
       } else {
-        // Get more details about the failed direct request
-        const clonedResponse = response.clone();
-        let responseText = "";
-        try {
-          responseText = await clonedResponse.text();
-        } catch (e) {
-          responseText = "Could not read response body";
-        }
-
-        const responseHeaders = {};
-        response.headers.forEach((value, key) => {
-          responseHeaders[key] = value;
-        });
-
-        const errorDetails = {
-          status: response.status,
-          statusText: response.statusText,
-          headers: responseHeaders,
-          body: responseText.substring(0, 1000),
+        lastResponseData = {
+          status: response.statusCode,
+          statusText: response.statusMessage,
+          headers: response.headers,
+          body: response.body?.toString("utf8").substring(0, 1000),
         };
-
-        console.error("Direct request failed:");
-        console.error(
-          `Status: ${errorDetails.status} ${errorDetails.statusText}`
-        );
-        console.error(
-          `Headers: ${JSON.stringify(errorDetails.headers, null, 2)}`
-        );
-        console.error(`Body: ${errorDetails.body}`);
-
         throw new Error(
-          `Direct HTTP error: ${response.status} - ${response.statusText}`
+          `Direct HTTP error: ${response.statusCode} - ${response.statusMessage}`
         );
       }
     } catch (directError) {
       console.error("Direct connection error:", directError.message);
-      // If direct connection also fails, throw the original proxy error with last response data
       if (lastResponseData) {
         throw new Error(
           `Failed after multiple attempts. Last status: ${
@@ -932,14 +874,17 @@ async function performOCRDirect(imagePath, processId, config) {
     // Send the request directly
     let response;
     try {
-      response = await fetch("https://api.openl.io/translate/img", {
+      response = await cloudscraper({
         method: "POST",
+        uri: "https://api.openl.io/translate/img",
         headers: headers,
         body: body,
+        encoding: null,
+        resolveWithFullResponse: true,
       });
 
       console.log(
-        `[DIRECT] Response status: ${response.status} ${response.statusText}`
+        `[DIRECT] Response status: ${response.statusCode} ${response.statusMessage}`
       );
 
       // Log response headers
@@ -971,10 +916,9 @@ async function performOCRDirect(imagePath, processId, config) {
       // Remove lock file if request fails
       removeLockFile(imagePath);
       throw new Error(
-        `HTTP error! Status: ${response.status}, Body: ${errorText.substring(
-          0,
-          200
-        )}`
+        `HTTP error! Status: ${
+          response.statusCode
+        }, Body: ${errorText.substring(0, 200)}`
       );
     }
 
