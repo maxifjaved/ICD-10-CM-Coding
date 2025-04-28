@@ -8,6 +8,7 @@ export default function Home() {
     text: string;
     files: string[];
     ocrResults: { [key: string]: string };
+    medicalCoding?: string;
   } | null>(null);
 
   const [processing, setProcessing] = useState(false);
@@ -103,6 +104,17 @@ export default function Home() {
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {result.medicalCoding && (
+              <div className="mb-4">
+                <h3 className="text-sm font-medium mb-2">Medical Coding:</h3>
+                <div className="p-4 bg-primary/5 rounded-lg border border-primary/20">
+                  <pre className="text-sm text-foreground/80 whitespace-pre-wrap">
+                    {result.medicalCoding}
+                  </pre>
+                </div>
               </div>
             )}
           </div>

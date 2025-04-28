@@ -2,8 +2,9 @@
 
 import { extname } from 'path'
 import { performOCR } from '@/helpers/openl-ocr'
+import { queryGenAiMedicalCoding } from './gemini'
 
-export async function submitMedicalData(formData: FormData): Promise<{ text: string; files: string[]; ocrResults: { [key: string]: string } }> {
+export async function submitMedicalData(formData: FormData): Promise<{ text: string; files: string[]; ocrResults: { [key: string]: string }; medicalCoding?: string }> {
   try {
     const text = formData.get('text') as string
     const files = formData.getAll('files') as File[]
@@ -62,10 +63,24 @@ export async function submitMedicalData(formData: FormData): Promise<{ text: str
       }
     }
 
+    // Combine OCR results and text for medical coding analysis
+    let medicalCoding: string | undefined
+    // Combine all OCR text with user-provided text
+    const allOcrText = Object.values(ocrResults).join('\n\n')
+    
+    if (text || allOcrText) {
+      try {
+        medicalCoding = await queryGenAiMedicalCoding(text, allOcrText)
+      } catch (error) {
+        console.error('Error generating medical coding:', error)
+      }
+    }
+
     return {
       text,
       files: uploadedFiles,
-      ocrResults
+      ocrResults,
+      medicalCoding
     }
   } catch (error) {
     console.error('Error processing submission:', error)
